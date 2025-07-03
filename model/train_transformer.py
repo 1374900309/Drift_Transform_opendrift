@@ -142,4 +142,3 @@ for epoch in range(1, 11):
     torch.save(model.state_dict(), "drift_transformer.pth")
     joblib.dump(feature_scaler, "feature_scaler.save")
     joblib.dump(target_scaler, "target_scaler.save")
-    
