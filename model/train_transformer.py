@@ -10,14 +10,14 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 import os
 import joblib
 
-# === 路径配置 ===
+# 路径配置
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 MODEL_DIR = os.path.join(CURRENT_DIR, "trained_model")
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# === 读取数据 ===
-csv_path = os.path.join(ROOT_DIR, "data", "train_data", "particles_output(no_wind).csv")
+# 读取数据
+csv_path = os.path.join(ROOT_DIR, "data", "train_data", "Japan(solid)1-8(no_wind)_clean.csv")
 print("📂 正在读取 CSV 文件...")
 if not os.path.exists(csv_path):
     print(f"❌ 文件不存在: {csv_path}")
@@ -27,9 +27,9 @@ df = pd.read_csv(csv_path)
 print("✅ CSV 文件读取成功，数据行数：", len(df))
 print(df.head())
 
-# === 特征选择与清洗 ===
+# 特征选择与清洗
 features = ["lon", "lat", "x_sea_water_velocity", "y_sea_water_velocity"]
-target = ["lon", "lat"]
+target = ["lon", "lat", "x_sea_water_velocity", "y_sea_water_velocity"]
 seq_len = 10
 
 df = df.replace([np.inf, -np.inf], np.nan).dropna()
@@ -40,27 +40,47 @@ for col in features + target:
 if df.isnull().any().any():
     raise ValueError("❌ 数据中存在 NaN，请检查！")
 
-# === 标准化 ===
+# 标准化
+print("🔄 正在标准化数据...")
 print("🔄 正在标准化数据...")
 feature_scaler = StandardScaler()
 target_scaler = StandardScaler()
-df[features] = feature_scaler.fit_transform(df[features])
-df[target] = target_scaler.fit_transform(df[target])
 
-# === 构造序列样本 ===
+# 关键点：一定要用原始的target数据fit！不要用已经标准化后的df[target]
+raw_target = df[target].copy()
+df[features] = feature_scaler.fit_transform(df[features])
+df[target] = target_scaler.fit_transform(raw_target)
+
+print("Target scaler mean:", target_scaler.mean_)
+print("Target scaler scale:", target_scaler.scale_)
+
+# 构造序列样本
 print("🧱 正在构造序列样本...")
+
+# 推荐分组滑窗（避免跨粒子轨迹，安全性高）
 X, Y = [], []
-for i in range(len(df) - seq_len):
-    X.append(df[features].iloc[i:i+seq_len].values)
-    Y.append(df[target].iloc[i+seq_len].values)
+
+if 'trajectory' in df.columns:
+    for traj_id, group in df.groupby('trajectory'):
+        group = group.reset_index(drop=True)
+        for i in range(len(group) - seq_len):
+            X.append(group[features].iloc[i:i+seq_len].values)
+            Y.append(group[target].iloc[i+seq_len].values)
+else:
+    # 没有trajectory分组就用普通滑窗（老写法）
+    for i in range(len(df) - seq_len):
+        X.append(df[features].iloc[i:i+seq_len].values)
+        Y.append(df[target].iloc[i+seq_len].values)
+
 X = np.array(X, dtype=np.float32)
 Y = np.array(Y, dtype=np.float32)
 if np.isnan(X).any() or np.isnan(Y).any():
     raise ValueError("❌ 构造后的数据中存在 NaN！")
 print("✅ 构造完成，X shape:", X.shape, "Y shape:", Y.shape)
 
-# === 数据划分与加载 ===
+# 数据划分与加载
 X_train, X_val, Y_train, Y_val = train_test_split(X, Y, test_size=0.2, random_state=42)
+
 class DriftDataset(Dataset):
     def __init__(self, X, Y):
         self.X = torch.tensor(X)
@@ -74,9 +94,9 @@ train_loader = DataLoader(DriftDataset(X_train, Y_train), batch_size=32, shuffle
 val_loader = DataLoader(DriftDataset(X_val, Y_val), batch_size=32)
 print("✅ 数据加载完成，训练样本数：", len(train_loader.dataset), "验证样本数：", len(val_loader.dataset))
 
-# === Transformer 模型结构 ===
+# Transformer 模型结构
 class DriftTransformer(nn.Module):
-    def __init__(self, input_dim=4, model_dim=128, nhead=8, num_layers=4, output_dim=2):
+    def __init__(self, input_dim=4, model_dim=128, nhead=8, num_layers=4, output_dim=4):
         super().__init__()
         self.input_proj = nn.Linear(input_dim, model_dim)
         encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=nhead, batch_first=True)
@@ -86,19 +106,19 @@ class DriftTransformer(nn.Module):
         x = self.input_proj(x)
         x = self.transformer(x)
         x = x.mean(dim=1)
-        return torch.tanh(self.output(x))
+        return self.output(x)  
 
-# === 初始化模型与训练参数 ===
+# 初始化模型与训练参数
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = DriftTransformer().to(device)
+model = DriftTransformer(input_dim=4, output_dim=4).to(device)
 print("✅ 模型初始化完成，设备：", device)
 print(model)
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-# === 模型训练 ===
+# 模型训练
 print("🚀 开始训练...")
-for epoch in range(1, 11):
+for epoch in range(1, 50):
     model.train()
     total_loss = 0
     for xb, yb in train_loader:
@@ -114,7 +134,7 @@ for epoch in range(1, 11):
         total_loss += loss.item()
     avg_loss = total_loss / len(train_loader)
 
-    # === 验证阶段 ===
+    # 验证阶段
     model.eval()
     val_loss = 0
     all_preds = []
@@ -130,7 +150,7 @@ for epoch in range(1, 11):
     all_preds = np.concatenate(all_preds, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
 
-    # === 反归一化 & 评估精度 ===
+    # 评估过程
     all_preds_inv = target_scaler.inverse_transform(all_preds)
     all_targets_inv = target_scaler.inverse_transform(all_targets)
     mae = mean_absolute_error(all_targets_inv, all_preds_inv)
