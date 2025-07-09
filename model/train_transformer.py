@@ -27,11 +27,11 @@ df = pd.read_csv(csv_path)
 print("✅ CSV 文件读取成功，数据行数：", len(df))
 print(df.head())
 
-# 特征选择与清洗
 features = ["lon", "lat", "x_sea_water_velocity", "y_sea_water_velocity"]
 target = ["lon", "lat", "x_sea_water_velocity", "y_sea_water_velocity"]
 seq_len = 10
 
+# 清洗
 df = df.replace([np.inf, -np.inf], np.nan).dropna()
 for col in features + target:
     if df[col].nunique() <= 1:
@@ -42,11 +42,8 @@ if df.isnull().any().any():
 
 # 标准化
 print("🔄 正在标准化数据...")
-print("🔄 正在标准化数据...")
 feature_scaler = StandardScaler()
 target_scaler = StandardScaler()
-
-# 关键点：一定要用原始的target数据fit！不要用已经标准化后的df[target]
 raw_target = df[target].copy()
 df[features] = feature_scaler.fit_transform(df[features])
 df[target] = target_scaler.fit_transform(raw_target)
@@ -54,23 +51,24 @@ df[target] = target_scaler.fit_transform(raw_target)
 print("Target scaler mean:", target_scaler.mean_)
 print("Target scaler scale:", target_scaler.scale_)
 
-# 构造序列样本
+# ========= 关键：高效分组滑窗采样 ==========
 print("🧱 正在构造序列样本...")
 
-# 推荐分组滑窗（避免跨粒子轨迹，安全性高）
 X, Y = [], []
 
 if 'trajectory' in df.columns:
-    for traj_id, group in df.groupby('trajectory'):
-        group = group.reset_index(drop=True)
-        for i in range(len(group) - seq_len):
-            X.append(group[features].iloc[i:i+seq_len].values)
-            Y.append(group[target].iloc[i+seq_len].values)
+    # 更高效的方式，用 numpy 加速
+    for _, group in df.groupby('trajectory'):
+        arr = group[features + target].values  # shape: [N, 8]
+        if len(arr) <= seq_len: continue
+        for i in range(len(arr) - seq_len):
+            X.append(arr[i:i+seq_len, :4])     # 前4列
+            Y.append(arr[i+seq_len, 4:])      # 后4列
 else:
-    # 没有trajectory分组就用普通滑窗（老写法）
-    for i in range(len(df) - seq_len):
-        X.append(df[features].iloc[i:i+seq_len].values)
-        Y.append(df[target].iloc[i+seq_len].values)
+    arr = df[features + target].values
+    for i in range(len(arr) - seq_len):
+        X.append(arr[i:i+seq_len, :4])
+        Y.append(arr[i+seq_len, 4:])
 
 X = np.array(X, dtype=np.float32)
 Y = np.array(Y, dtype=np.float32)
@@ -78,7 +76,8 @@ if np.isnan(X).any() or np.isnan(Y).any():
     raise ValueError("❌ 构造后的数据中存在 NaN！")
 print("✅ 构造完成，X shape:", X.shape, "Y shape:", Y.shape)
 
-# 数据划分与加载
+# ================================
+
 X_train, X_val, Y_train, Y_val = train_test_split(X, Y, test_size=0.2, random_state=42)
 
 class DriftDataset(Dataset):
@@ -118,7 +117,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
 # 模型训练
 print("🚀 开始训练...")
-for epoch in range(1, 50):
+for epoch in range(1, 25):
     model.train()
     total_loss = 0
     for xb, yb in train_loader:
@@ -159,6 +158,6 @@ for epoch in range(1, 50):
     print(f"✅ Epoch {epoch:2d}: Train Loss = {avg_loss:.6f}, Val Loss = {avg_val_loss:.6f} | MAE = {mae:.6f}, RMSE = {rmse:.6f}")
 
     # === 保存模型与 scaler ===
-    torch.save(model.state_dict(), os.path.join(MODEL_DIR, "drift_transformer.pth"))
-    joblib.dump(feature_scaler, os.path.join(MODEL_DIR, "feature_scaler.save"))
-    joblib.dump(target_scaler, os.path.join(MODEL_DIR, "target_scaler.save"))
+    torch.save(model.state_dict(), os.path.join(MODEL_DIR, "drift_transformer_Japan(1-8).pth"))
+    joblib.dump(feature_scaler, os.path.join(MODEL_DIR, "feature_scaler_Japan(1-8).save"))
+    joblib.dump(target_scaler, os.path.join(MODEL_DIR, "target_scaler_Japan(1-8).save"))

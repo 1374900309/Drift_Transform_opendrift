@@ -11,11 +11,11 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
 TRAINED_MODEL_DIR = os.path.join(CURRENT_DIR, "trained_model")
 
-model_path = os.path.join(TRAINED_MODEL_DIR, "drift_transformer.pth")
-feature_scaler_path = os.path.join(TRAINED_MODEL_DIR, "feature_scaler.save")
-target_scaler_path = os.path.join(TRAINED_MODEL_DIR, "target_scaler.save")
+model_path = os.path.join(TRAINED_MODEL_DIR, "drift_transformer_Japan(1-8).pth")
+feature_scaler_path = os.path.join(TRAINED_MODEL_DIR, "feature_scaler_Japan(1-8).save")
+target_scaler_path = os.path.join(TRAINED_MODEL_DIR, "target_scaler_Japan(1-8).save")
 csv_input_path = os.path.join(ROOT_DIR, "data", "for_predict", "predict_input.csv")  # 每个粒子10步，预测下一步
-output_csv_path = os.path.join(ROOT_DIR, "result", "prediction_data", "predict_output_batch.csv")
+output_csv_path = os.path.join(ROOT_DIR, "result", "prediction_data", "predict_output_batch_Japan(1-8).csv")
 
 # === 加载模型 ===
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,5 +67,3 @@ df_out = pd.DataFrame(pred_real, columns=[
     "pred_lon", "pred_lat", "pred_x_sea_water_velocity", "pred_y_sea_water_velocity"])
 df_out.to_csv(output_csv_path, index=False)
 print(f"✅ 已保存 {num_particles} 个粒子的预测结果到：{output_csv_path}")
-print(target_scaler.mean_)
-print(target_scaler.scale_)
