@@ -76,7 +76,7 @@ if np.isnan(X).any() or np.isnan(Y).any():
     raise ValueError("❌ 构造后的数据中存在 NaN！")
 print("✅ 构造完成，X shape:", X.shape, "Y shape:", Y.shape)
 
-# ================================
+
 
 X_train, X_val, Y_train, Y_val = train_test_split(X, Y, test_size=0.2, random_state=42)
 
@@ -157,7 +157,7 @@ for epoch in range(1, 25):
 
     print(f"✅ Epoch {epoch:2d}: Train Loss = {avg_loss:.6f}, Val Loss = {avg_val_loss:.6f} | MAE = {mae:.6f}, RMSE = {rmse:.6f}")
 
-    # === 保存模型与 scaler ===
+    # 保存模型与 scaler 
     torch.save(model.state_dict(), os.path.join(MODEL_DIR, "drift_transformer_Japan(1-8).pth"))
     joblib.dump(feature_scaler, os.path.join(MODEL_DIR, "feature_scaler_Japan(1-8).save"))
     joblib.dump(target_scaler, os.path.join(MODEL_DIR, "target_scaler_Japan(1-8).save"))
