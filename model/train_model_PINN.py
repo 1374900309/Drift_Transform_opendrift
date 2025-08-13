@@ -18,22 +18,24 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 
 # 读取数据
 csv_path = os.path.join(ROOT_DIR, "data", "train_data", "Japan6to7_clean.csv")
-print("\U0001F4C2 正在读取 CSV 文件...")
+print("📂 正在读取 CSV 文件...")
 if not os.path.exists(csv_path):
     print(f"❌ 文件不存在: {csv_path}")
     exit()
 
 df = pd.read_csv(csv_path)
 print("✅ CSV 文件读取成功，数据行数：", len(df))
+print(df.head())
 
 features = ["lon", "lat", "x_sea_water_velocity", "y_sea_water_velocity"]
 target = ["lon", "lat", "x_sea_water_velocity", "y_sea_water_velocity"]
 seq_len = 10
 
-# 清洗数据
+# 清洗
 df = df.replace([np.inf, -np.inf], np.nan).dropna()
 for col in features + target:
     if df[col].nunique() <= 1:
+        print(f"⚠️ 列 {col} 为常数列，已删除")
         df.drop(columns=[col], inplace=True)
 if df.isnull().any().any():
     raise ValueError("❌ 数据中存在 NaN，请检查！")
@@ -46,8 +48,12 @@ raw_target = df[target].copy()
 df[features] = feature_scaler.fit_transform(df[features])
 df[target] = target_scaler.fit_transform(raw_target)
 
-# 构造序列样本
+print("Target scaler mean:", target_scaler.mean_)
+print("Target scaler scale:", target_scaler.scale_)
+
+# ========= 构造序列样本 =========
 print("🧱 正在构造序列样本...")
+
 X, Y = [], []
 if 'trajectory' in df.columns:
     for _, group in df.groupby('trajectory'):
@@ -64,6 +70,10 @@ else:
 
 X = np.array(X, dtype=np.float32)
 Y = np.array(Y, dtype=np.float32)
+if np.isnan(X).any() or np.isnan(Y).any():
+    raise ValueError("❌ 构造后的数据中存在 NaN！")
+print("✅ 构造完成，X shape:", X.shape, "Y shape:", Y.shape)
+
 X_train, X_val, Y_train, Y_val = train_test_split(X, Y, test_size=0.2, random_state=42)
 
 class DriftDataset(Dataset):
@@ -77,7 +87,7 @@ class DriftDataset(Dataset):
 
 train_loader = DataLoader(DriftDataset(X_train, Y_train), batch_size=32, shuffle=True)
 val_loader = DataLoader(DriftDataset(X_val, Y_val), batch_size=32)
-
+print("✅ 数据加载完成，训练样本数：", len(train_loader.dataset), "验证样本数：", len(val_loader.dataset))
 
 # Transformer 模型结构
 class DriftTransformer(nn.Module):
@@ -93,42 +103,44 @@ class DriftTransformer(nn.Module):
         x = x.mean(dim=1)
         return self.output(x)
 
-# 拉格朗日残差
-def lagrangian_loss(xb, pred, dt=1.0):
-    delta_lon = (xb[:, -1, 0] - xb[:, -2, 0]) / dt
-    delta_lat = (xb[:, -1, 1] - xb[:, -2, 1]) / dt
+# 拉格朗日物理残差约束
+def lagrangian_loss(xb, pred):
+    delta_lon = xb[:, -1, 0] - xb[:, -2, 0]
+    delta_lat = xb[:, -1, 1] - xb[:, -2, 1]
+    approx_u = delta_lon
+    approx_v = delta_lat
     u_pred = pred[:, 2]
     v_pred = pred[:, 3]
-    return ((delta_lon - u_pred)**2 + (delta_lat - v_pred)**2).mean()
+    return ((approx_u - u_pred) ** 2 + (approx_v - v_pred) ** 2).mean()
 
-# 方向单调性约束
+# 新增：方向单调性损失
 def monotonic_loss(xb, pred):
     prev_lon = xb[:, -1, 0]
     prev_lat = xb[:, -1, 1]
     pred_lon = pred[:, 0]
     pred_lat = pred[:, 1]
+    
     delta_lon = xb[:, -1, 0] - xb[:, -2, 0]
     delta_lat = xb[:, -1, 1] - xb[:, -2, 1]
+
     pred_delta_lon = pred_lon - prev_lon
     pred_delta_lat = pred_lat - prev_lat
+
     lon_dir_mismatch = (delta_lon * pred_delta_lon < 0).float()
     lat_dir_mismatch = (delta_lat * pred_delta_lat < 0).float()
+
     return lon_dir_mismatch.mean() + lat_dir_mismatch.mean()
 
-# 分散性正则项
-def dispersion_loss(pred):
-    pos = pred[:, :2]  # [lon, lat]
-    mean_pos = pos.mean(dim=0, keepdim=True)
-    return -((pos - mean_pos) ** 2).mean()
-
-# 模型训练
+# 训练设置
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = DriftTransformer().to(device)
+model = DriftTransformer(input_dim=4, output_dim=4).to(device)
+print("✅ 模型初始化完成，设备：", device)
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
+# 模型训练
 print("🚀 开始训练...")
-for epoch in range(1, 11):
+for epoch in range(1, 10):
     model.train()
     total_loss = 0
     for xb, yb in train_loader:
@@ -138,17 +150,13 @@ for epoch in range(1, 11):
         loss_data = criterion(pred, yb)
         loss_phys = lagrangian_loss(xb, pred)
         loss_mono = monotonic_loss(xb, pred)
-        loss_disp = dispersion_loss(pred)
-
-        # 自适应加权损失组合
-        phys_w = max(0.02, 0.1 * (1 - epoch / 20))
-        mono_w = max(0.01, 0.05 * (1 - epoch / 20))
-        loss = loss_data + phys_w * loss_phys + mono_w * loss_mono + 0.01 * loss_disp
-
+        loss = loss_data + 0.1 * loss_phys + 0.2 * loss_mono
+        if torch.isnan(loss):
+            print("❌ NaN Loss 检测到！")
+            exit()
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-
     avg_loss = total_loss / len(train_loader)
 
     model.eval()
@@ -163,6 +171,7 @@ for epoch in range(1, 11):
             all_preds.append(pred.cpu().numpy())
             all_targets.append(yb.cpu().numpy())
 
+    avg_val_loss = val_loss / len(val_loader)
     all_preds = np.concatenate(all_preds, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
     all_preds_inv = target_scaler.inverse_transform(all_preds)
@@ -170,7 +179,8 @@ for epoch in range(1, 11):
     mae = mean_absolute_error(all_targets_inv, all_preds_inv)
     rmse = np.sqrt(mean_squared_error(all_targets_inv, all_preds_inv))
 
-    print(f"✅ Epoch {epoch:2d}: Train Loss = {avg_loss:.6f}, Val Loss = {val_loss:.6f} | MAE = {mae:.6f}, RMSE = {rmse:.6f}")
-    torch.save(model.state_dict(), os.path.join(MODEL_DIR, "Japan6to7(nodandiao).pth"))
-    joblib.dump(feature_scaler, os.path.join(MODEL_DIR, "feature_scaler_Japan6to7(nodandiao).save"))
-    joblib.dump(target_scaler, os.path.join(MODEL_DIR, "target_scaler_Japan6to7(nodandiao).save"))
+    print(f"✅ Epoch {epoch:2d}: Train Loss = {avg_loss:.6f}, Val Loss = {avg_val_loss:.6f} | MAE = {mae:.6f}, RMSE = {rmse:.6f}")
+
+    torch.save(model.state_dict(), os.path.join(MODEL_DIR, "Japan6to7.pth"))
+    joblib.dump(feature_scaler, os.path.join(MODEL_DIR, "feature_scaler_Japan6to7.save"))
+    joblib.dump(target_scaler, os.path.join(MODEL_DIR, "target_scaler_Japan6to7.save"))

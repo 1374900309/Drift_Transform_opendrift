@@ -14,3 +14,4 @@ class DriftTransformer(nn.Module):
         x = self.transformer(x)          # shape: [B, T, D]
         x = x.mean(dim=1)                # 平均池化
         return self.output(x)            # shape: [B, 2]
+    

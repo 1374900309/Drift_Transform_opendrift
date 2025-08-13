@@ -5,8 +5,8 @@ import os
 # 文件路径 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURRENT_DIR)
-true_csv = os.path.join(ROOT_DIR, "result", "predict_target.csv") # 真实数据
-pred_csv = os.path.join(ROOT_DIR, "result", "predict_output_batch_Japan(1-8).csv") # 模型预测数据
+true_csv = os.path.join(ROOT_DIR, "result", "predict_input1.csv") # 真实数据
+pred_csv = os.path.join(ROOT_DIR, "result", "nodandiao_try1.csv") # 模型预测数据
 
 # 读取 CSV 
 df_true = pd.read_csv(true_csv)
